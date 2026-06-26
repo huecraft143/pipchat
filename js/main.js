@@ -48,6 +48,18 @@ async function init() {
     await UI.renderContacts();
     await UI.renderGroups();
 
+    // Refresh nicks for existing contacts in background
+    Storage.getContacts().then(contacts => {
+      contacts.forEach(async c => {
+        const profile = await Network.lookupProfile(c.userId);
+        if (profile?.nick && profile.nick !== c.nick) {
+          c.nick = profile.nick;
+          await Storage.saveContact(c);
+          await UI.renderContacts();
+        }
+      });
+    });
+
     // Listen on all saved groups
     const groups = await Storage.getGroups();
     groups.forEach(g => {
