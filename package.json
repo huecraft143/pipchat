@@ -1,0 +1,11 @@
+{
+  "name": "pizzchat-relay",
+  "version": "1.0.0",
+  "main": "relay.js",
+  "scripts": {
+    "start": "node relay.js"
+  },
+  "dependencies": {
+    "gun": "^0.2020.1240"
+  }
+}
