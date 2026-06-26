@@ -91,20 +91,27 @@ In your repo: **Settings → Pages → Deploy from branch → main → / (root) 
 
 Your app will be live at `https://YOUR_USERNAME.github.io/pipchat`.
 
-### 3. Deploy the relay — Railway.app
+### 3. Deploy the relay — Render.com (free)
 
-1. Go to [railway.app](https://railway.app) and sign in with GitHub
-2. **New Project → Deploy from GitHub repo** → select `pipchat`
-3. Railway reads `package.json` and runs `node relay.js` automatically
-4. **Settings → Networking → Generate Domain** → copy the URL
+1. Go to [render.com](https://render.com) and sign in with GitHub
+2. **New → Web Service** → connect the `pipchat` repo
+3. Set these fields:
+   - **Environment:** Node
+   - **Build Command:** `npm install`
+   - **Start Command:** `node relay.js`
+   - **Instance Type:** Free
+4. Click **Create Web Service** → wait for the first deploy
+5. Copy the URL shown at the top, e.g. `https://pipchat-relay.onrender.com`
+
+> **Note:** Render's free tier spins down the service after 15 minutes of inactivity. The first connection after a period of silence takes ~30 seconds to wake up. Once the relay is warm, everything works normally.
 
 ### 4. Set the relay URL
 
-Edit `js/Network.js` and replace the `#RELAYS` array with your Railway URL:
+Edit `js/Network.js` and replace the `#RELAYS` array with your Render URL:
 
 ```js
 #RELAYS = [
-  'https://YOUR-RELAY.up.railway.app/gun',
+  'https://pipchat-relay.onrender.com/gun',
 ];
 ```
 

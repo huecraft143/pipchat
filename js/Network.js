@@ -10,9 +10,7 @@ class NetworkManager {
   #grpListeners = {};
 
   #RELAYS = [
-    'http://localhost:8765/gun',
-    'https://gun.eco/gun',
-    'https://relay.peer.ooo/gun',
+    'https://pipchat.onrender.com/gun',
   ];
 
   async init() {
