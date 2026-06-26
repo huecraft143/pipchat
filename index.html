@@ -356,7 +356,10 @@ body::after{
 
         <div class="id-field">
           <div class="id-label">DESIGNATION (OPTIONAL):</div>
-          <input type="text" id="nick-input" class="pip-input" placeholder="> ENTER DESIGNATION..." maxlength="20">
+          <div style="display:flex;gap:6px">
+            <input type="text" id="nick-input" class="pip-input" placeholder="> ENTER DESIGNATION..." maxlength="20">
+            <button class="pip-btn sm" onclick="saveNick()">[SAVE]</button>
+          </div>
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">

@@ -24,7 +24,8 @@ async function init() {
     // Nick
     const nick = await Storage.getSetting('nick');
     if (nick) UI.setNick(nick);
-    const saveNick = async (input) => {
+    window.saveNick = async () => {
+      const input = document.getElementById('nick-input');
       const v = input.value.trim();
       await Storage.saveSetting('nick', v);
       UI.setNick(v);
@@ -32,8 +33,8 @@ async function init() {
       UI.notify('> DESIGNATION UPDATED');
     };
     const nickInput = document.getElementById('nick-input');
-    nickInput.addEventListener('change', e => saveNick(e.target));
-    nickInput.addEventListener('keydown', e => { if (e.key === 'Enter') saveNick(e.target); });
+    nickInput.addEventListener('change', window.saveNick);
+    nickInput.addEventListener('keydown', e => { if (e.key === 'Enter') window.saveNick(); });
 
     // Network
     await Network.init();
