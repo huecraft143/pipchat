@@ -41,7 +41,7 @@ function showModal(title, bodyLines, buttons, borderColor = 'green') {
     const b = document.createElement('button');
     b.className = 'pip-btn' + (btn.cls ? ' ' + btn.cls : '');
     b.textContent = btn.label;
-    b.addEventListener('click', () => { bg.remove(); if (btn.action) btn.action(); });
+    b.addEventListener('click', () => { if (btn.action) btn.action(); bg.remove(); });
     actions.appendChild(b);
   });
 

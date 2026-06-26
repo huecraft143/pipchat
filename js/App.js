@@ -75,8 +75,9 @@ class PipChatApp {
     await Storage.saveMessage(msg);
 
     const isActive = this.#activeDM && this.#activeDM.userId === blob.from;
-    if (isActive) { await UI.renderMessages(this.#dmConvId(blob.from)); }
-    else { Audio.recv(); UI.notify('> INCOMING TRANSMISSION FROM @' + blob.from); }
+    const dataVisible = document.getElementById('tab-data')?.classList.contains('active');
+    if (isActive) await UI.renderMessages(this.#dmConvId(blob.from));
+    if (!isActive || !dataVisible) { Audio.recv(); UI.notify('> INCOMING TRANSMISSION FROM @' + blob.from); }
   }
 
   // ── INCOMING GROUP MSG ────────────────────────────────────────
@@ -108,8 +109,9 @@ class PipChatApp {
     const msg = { id:msgId, conv, from:blob.from, text, ts:blob.ts||Date.now() };
     await Storage.saveMessage(msg);
     const isActive = this.#activeGroup && this.#activeGroup.groupId === group.groupId;
-    if (isActive) { await UI.renderMessages(conv); }
-    else { Audio.recv(); UI.notify('> INCOMING TRANSMISSION IN #' + group.name); }
+    const dataVisible = document.getElementById('tab-data')?.classList.contains('active');
+    if (isActive) await UI.renderMessages(conv);
+    if (!isActive || !dataVisible) { Audio.recv(); UI.notify('> INCOMING TRANSMISSION IN #' + group.name); }
   }
 
   async #saveAndRender(msg) {
@@ -183,6 +185,15 @@ class PipChatApp {
     UI.openChat('@' + contact.userId + (contact.nick ? ' · ' + contact.nick : ''));
     UI.switchTab('data');
     await UI.renderMessages(this.#dmConvId(contact.userId));
+    // Refresh nick in background
+    Network.lookupProfile(contact.userId).then(async profile => {
+      if (profile?.nick && profile.nick !== contact.nick) {
+        contact.nick = profile.nick;
+        await Storage.saveContact(contact);
+        await UI.renderContacts();
+        UI.openChat('@' + contact.userId + ' · ' + contact.nick);
+      }
+    });
   }
 
   async openGroup(group) {
