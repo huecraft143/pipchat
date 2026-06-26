@@ -24,12 +24,16 @@ async function init() {
     // Nick
     const nick = await Storage.getSetting('nick');
     if (nick) UI.setNick(nick);
-    document.getElementById('nick-input').addEventListener('change', async e => {
-      const v = e.target.value.trim();
+    const saveNick = async (input) => {
+      const v = input.value.trim();
       await Storage.saveSetting('nick', v);
       UI.setNick(v);
       await Network.publishProfile({ uid:Identity.uid(), nick:v, signPub:Identity.signPub(), boxPub:Identity.boxPub() });
-    });
+      UI.notify('> DESIGNATION UPDATED');
+    };
+    const nickInput = document.getElementById('nick-input');
+    nickInput.addEventListener('change', e => saveNick(e.target));
+    nickInput.addEventListener('keydown', e => { if (e.key === 'Enter') saveNick(e.target); });
 
     // Network
     await Network.init();

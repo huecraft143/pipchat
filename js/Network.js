@@ -21,6 +21,7 @@ class NetworkManager {
       this.#online = true;
       UI.connStatus(true, this.#peers);
       this.flushPending();
+      this.#resubscribeInbox();
     });
     this.#gun.on('bye', () => {
       this.#peers = Math.max(0, this.#peers - 1);
@@ -39,12 +40,21 @@ class NetworkManager {
   startListening() {
     if (this.#listening || !this.#gun) return;
     this.#listening = true;
+    this.#subscribeInbox();
+  }
+
+  #subscribeInbox() {
     const myUid = Identity.uid();
     this.#gun.get('pipchat_inbox_' + myUid).map().on((data, key) => {
       if (!data || !data.ct || this.#seen.has(key)) return;
       this.#seen.add(key);
       if (this.#dmCb) this.#dmCb(data, key);
     });
+  }
+
+  #resubscribeInbox() {
+    if (!this.#listening || !this.#gun) return;
+    this.#subscribeInbox();
   }
 
   setDmCallback(cb) { this.#dmCb = cb; }
