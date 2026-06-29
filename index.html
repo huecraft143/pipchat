@@ -7,7 +7,6 @@
 <meta name="description" content="Anonymous P2P E2E encrypted chat — Pip-Boy theme">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/libsodium@0.7.13/dist/modules/libsodium.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/libsodium-wrappers@0.7.13/dist/modules/libsodium-wrappers.js"></script>
 <style>
@@ -53,12 +52,9 @@ body::after{
   99%{opacity:.96}
 }
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
-@keyframes scanmove{0%{transform:translateY(-100%)}100%{transform:translateY(100vh)}}
 
 /* ── Typography ── */
 .glow     {text-shadow:0 0 8px var(--pip-green),0 0 16px var(--pip-green-glow)}
-.glow-amb {text-shadow:0 0 8px var(--pip-amber);color:var(--pip-amber)}
-.glow-red {text-shadow:0 0 8px var(--pip-red);color:var(--pip-red)}
 
 /* ── Boot overlay ── */
 #boot-overlay{
@@ -240,8 +236,27 @@ body::after{
 }
 .msg.pending .msg-body{color:var(--pip-amber)}
 .msg.pending .msg-hdr::after{content:' [PENDING]';color:var(--pip-amber)}
+.msg.failed .msg-body{color:var(--pip-red)}
+.msg.failed .msg-hdr::after{content:' [NOT SENT]';color:var(--pip-red)}
 .msg.corrupted .msg-body{color:var(--pip-red)}
 .msg.corrupted .msg-hdr::after{content:' [CORRUPTED]';color:var(--pip-red)}
+
+/* ── DM mode bar ── */
+#dm-mode-bar{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 0 8px;margin-bottom:4px;
+  border-bottom:1px solid var(--pip-border);
+  font-size:10px;
+}
+.mode-badge{
+  padding:2px 8px;
+  border:1px solid;
+  letter-spacing:1px;font-size:10px;
+  clip-path:polygon(0 3px,3px 0,calc(100% - 3px) 0,100% 3px,100% calc(100% - 3px),calc(100% - 3px) 100%,3px 100%,0 calc(100% - 3px));
+}
+.mode-badge.relay{color:var(--pip-green-dim);border-color:var(--pip-green-dim)}
+.mode-badge.direct{color:var(--pip-green);border-color:var(--pip-green);text-shadow:0 0 8px var(--pip-green)}
+.mode-badge.requesting,.mode-badge.connecting{color:var(--pip-amber);border-color:var(--pip-amber)}
 
 /* ── Chat header ── */
 #chat-hdr{
@@ -443,6 +458,7 @@ body::after{
 <script src="js/Audio.js"></script>
 <script src="js/Storage.js"></script>
 <script src="js/Crypto.js"></script>
+<script src="js/Ratchet.js"></script>
 <script src="js/Identity.js"></script>
 <script src="js/Network.js"></script>
 <script src="js/UI.js"></script>

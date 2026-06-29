@@ -3,7 +3,7 @@
 class StorageManager {
   #db = null;
   #DB_NAME = 'pipchat_v1';
-  #DB_VER = 1;
+  #DB_VER = 2;
 
   #open() {
     if (this.#db) return Promise.resolve(this.#db);
@@ -20,6 +20,8 @@ class StorageManager {
           const ms = d.createObjectStore('messages', {keyPath:'id'});
           ms.createIndex('conv', 'conv', {unique:false});
         }
+        if (!d.objectStoreNames.contains('ratchet')) d.createObjectStore('ratchet', {keyPath:'uid'});
+        if (!d.objectStoreNames.contains('myspk'))   d.createObjectStore('myspk',   {keyPath:'id'});
       };
       r.onsuccess = e => { this.#db = e.target.result; res(this.#db); };
       r.onerror   = e => rej(e.target.error);
@@ -60,8 +62,13 @@ class StorageManager {
   addPending(m)      { return this.#idb('pending',  'readwrite', s => s.add(m)); }
   getPending()       { return this.#idb('pending',  'readonly',  s => s.getAll()); }
   delPending(id)     { return this.#idb('pending',  'readwrite', s => s.delete(id)); }
-  clearPending()     { return this.#idb('pending',  'readwrite', s => s.clear()); }
   saveMessage(m)     { return this.#idb('messages', 'readwrite', s => s.put(m)); }
+  getMessage(id)     { return this.#idb('messages', 'readonly',  s => s.get(id)); }
+  getRatchetState(uid) { return this.#idb('ratchet', 'readonly',  s => s.get(uid)).then(r => r || null); }
+  saveRatchetState(r)  { return this.#idb('ratchet', 'readwrite', s => s.put(r)); }
+  delRatchetState(uid) { return this.#idb('ratchet', 'readwrite', s => s.delete(uid)); }
+  getMySpk()           { return this.#idb('myspk',   'readonly',  s => s.get('main')).then(r => r || null); }
+  saveMySpk(spk)       { return this.#idb('myspk',   'readwrite', s => s.put({ id: 'main', ...spk })); }
 
   getMessages(conv, lim = 200) {
     return this.#open().then(d => new Promise((res, rej) => {
@@ -75,7 +82,7 @@ class StorageManager {
 
   async nuke() {
     const d = await this.#open();
-    for (const n of ['identity','settings','contacts','groups','pending','messages']) {
+    for (const n of ['identity','settings','contacts','groups','pending','messages','ratchet','myspk']) {
       await new Promise(res => {
         const t = d.transaction(n, 'readwrite');
         t.objectStore(n).clear();

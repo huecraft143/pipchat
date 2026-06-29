@@ -39,26 +39,33 @@ async function init() {
     // Network
     await Network.init();
     Network.setDmCallback(App.dmCallback);
+    Network.setDmModeCallback(App.dmModeChangedCallback);
+    Network.setDmRequestCallback(App.dmRequestCallback);
     Network.startListening();
     await Network.publishProfile({ uid:Identity.uid(), nick:nick||null, signPub:Identity.signPub(), boxPub:Identity.boxPub() });
+
+    // Signed prekey — generate or rotate (weekly)
+    await (async () => {
+      const SPK_TTL = 7 * 24 * 60 * 60 * 1000;
+      let spk = await Storage.getMySpk();
+      if (!spk || Date.now() - spk.ts > SPK_TTL) {
+        const kp    = Identity.kp();
+        const spkKp = Crypto.generateBoxKeypair();
+        const sig   = Crypto.sign(spkKp.boxPub, kp.signSec);
+        spk = { pub: spkKp.boxPub, sec: spkKp.boxSec, sig, ts: Date.now() };
+        await Storage.saveMySpk(spk);
+        console.log('[SPK][GENERATED] new signed prekey');
+      } else {
+        console.log('[SPK][LOADED] age:', Math.round((Date.now() - spk.ts) / 86400000), 'days');
+      }
+      Network.publishSpk(spk);
+    })();
 
     UI.notify(isNew ? PIP.idNew : PIP.idLoaded);
 
     // Render contacts + groups
     await UI.renderContacts();
     await UI.renderGroups();
-
-    // Refresh nicks for existing contacts in background
-    Storage.getContacts().then(contacts => {
-      contacts.forEach(async c => {
-        const profile = await Network.lookupProfile(c.userId);
-        if (profile?.nick && profile.nick !== c.nick) {
-          c.nick = profile.nick;
-          await Storage.saveContact(c);
-          await UI.renderContacts();
-        }
-      });
-    });
 
     // Listen on all saved groups
     const groups = await Storage.getGroups();
@@ -91,6 +98,9 @@ async function init() {
         UI.notify('> INCOMING CONTACT REQUEST DETECTED — REVIEW AND CONFIRM');
       }
     }
+
+    // Notify peers and clean up WebRTC direct connections when tab closes
+    window.addEventListener('pagehide', () => Network.closeAllDirect());
 
   } catch(err) {
     console.error('PipChat init error:', err);

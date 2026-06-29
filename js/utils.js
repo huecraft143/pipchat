@@ -4,7 +4,7 @@ const PIP = {
   online:    '> WASTELAND NETWORK: CONNECTED',
   offline:   '> WARNING: NO SIGNAL DETECTED',
   sent:      '> TRANSMISSION SUCCESSFUL',
-  queued:    '> ERROR: OFFLINE — TRANSMISSION QUEUED',
+  queued:    '> RELAY QUEUED — WILL TRANSMIT WHEN CONNECTED',
   pending:   '> PENDING: AWAITING NETWORK RESTORATION',
   added:     '> NEW DWELLER REGISTERED IN DATABASE',
   cryptoErr: '> CRITICAL: ENCRYPTION FAILURE',
@@ -13,6 +13,7 @@ const PIP = {
   idLoaded:  '> VAULT DWELLER IDENTITY VERIFIED',
   grpNew:    '> NEW SECURE CHANNEL ESTABLISHED',
   grpLeft:   '> CHANNEL ACCESS REVOKED',
+  rtcFailed: '> ERROR: DIRECT LINK DOWN — MESSAGE NOT SENT',
 };
 
 function esc(str) {

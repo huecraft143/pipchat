@@ -125,11 +125,49 @@ class UIManager {
     });
   }
 
+  // Opens a group chat (no DM mode bar)
   openChat(title) {
     document.getElementById('no-chat').style.display   = 'none';
     document.getElementById('chat-view').style.display = 'block';
     document.getElementById('chat-title').textContent  = title;
     document.getElementById('msg-bar').className = 'on';
+    const bar = document.getElementById('dm-mode-bar');
+    if (bar) bar.remove();
+  }
+
+  // Opens a 1-1 DM chat with relay/direct mode indicator
+  openDMChat(contact, mode) {
+    const label = '@' + contact.userId + (contact.nick ? ' · ' + contact.nick : '');
+    document.getElementById('no-chat').style.display   = 'none';
+    document.getElementById('chat-view').style.display = 'block';
+    document.getElementById('chat-title').textContent  = label;
+    document.getElementById('msg-bar').className = 'on';
+    this.#ensureDmModeBar();
+    this.updateDmMode(mode || 'relay');
+  }
+
+  #ensureDmModeBar() {
+    if (document.getElementById('dm-mode-bar')) return;
+    const bar = document.createElement('div');
+    bar.id = 'dm-mode-bar';
+    const chatHdr = document.getElementById('chat-hdr');
+    chatHdr.insertAdjacentElement('afterend', bar);
+  }
+
+  updateDmMode(mode) {
+    const bar = document.getElementById('dm-mode-bar');
+    if (!bar) return;
+    if (mode === 'direct') {
+      bar.innerHTML = '<span class="mode-badge direct">DIRECT LINK</span>' +
+        '<button class="pip-btn sm danger" onclick="App.closeDirectConnection()">[CLOSE DIRECT]</button>';
+    } else if (mode === 'requesting') {
+      bar.innerHTML = '<span class="mode-badge requesting">DIRECT REQUEST PENDING...</span>';
+    } else if (mode === 'connecting') {
+      bar.innerHTML = '<span class="mode-badge connecting">ESTABLISHING DIRECT LINK...</span>';
+    } else {
+      bar.innerHTML = '<span class="mode-badge relay">RELAY</span>' +
+        '<button class="pip-btn sm" onclick="App.requestDirectConnection()">[REQUEST DIRECT]</button>';
+    }
   }
 
   async renderMessages(conv) {
@@ -140,7 +178,10 @@ class UIManager {
     msgs.forEach(m => {
       const isMe = m.from === myUid;
       const div  = document.createElement('div');
-      div.className = 'msg' + (m.pending?' pending':'') + (m.corrupt?' corrupted':'');
+      div.className = 'msg' +
+        (m.pending   ? ' pending'   : '') +
+        (m.failed    ? ' failed'    : '') +
+        (m.corrupt   ? ' corrupted' : '');
       const t = new Date(m.ts).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
       div.innerHTML = `
         <div class="msg-hdr ${isMe?'mine':''}">

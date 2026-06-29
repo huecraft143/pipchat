@@ -3,6 +3,7 @@
 class PipChatApp {
   #activeDM    = null;
   #activeGroup = null;
+  #prevDmMode  = {};  // uid → last notified mode (to avoid spurious "relay" notifications)
 
   // ── PRIVATE HELPERS ──────────────────────────────────────────
 
@@ -23,61 +24,106 @@ class PipChatApp {
 
   async #handleDM(blob) {
     if (!blob || !blob.ct) return;
+    // Gun delivers nested objects as references — ratchet header is serialized as a string
+    const r = typeof blob.ratchet === 'string' ? (() => { try { return JSON.parse(blob.ratchet); } catch(_) { return null; } })() : null;
+    if (r) { await this.#handleDMRatchet(blob, r); return; }
+    await this.#handleDMLegacy(blob);
+  }
 
-    // 1. Verify sender identity (signPub must hash to claimed senderId)
+  // Ratchet path: sender identity is inside the ciphertext
+  async #handleDMRatchet(blob, r) {
+    const senderUid = blob.from;
+
+    if (r.type === 'x3dh') {
+      const existing = await Storage.getRatchetState(senderUid);
+      if (!existing || existing.sessionId !== r.ekPub) {
+        const mySpk = await Storage.getMySpk();
+        if (!mySpk || !r.senderBoxPub) {
+          console.warn('[X3DH][RECV] missing SPK or senderBoxPub from', senderUid.slice(0, 8));
+          return;
+        }
+        const kp  = Identity.kp();
+        const dh1 = Crypto.dh(mySpk.sec, r.senderBoxPub);  // SPK_B × IK_A
+        const dh2 = Crypto.dh(kp.boxSec, r.ekPub);         // IK_B × EK_A
+        const dh3 = Crypto.dh(mySpk.sec, r.ekPub);         // SPK_B × EK_A
+        await Ratchet.initSession(senderUid, Crypto.x3dhSecret(dh1, dh2, dh3), false, r.ekPub);
+        console.log('[X3DH][RECV] session from', senderUid.slice(0, 8));
+      }
+    }
+
+    let inner;
+    try { inner = await Ratchet.decrypt(senderUid, blob.ct, blob.nonce, r.msgNum); }
+    catch(e) { console.warn('[RATCHET] decrypt error:', e.message); return; }
+    if (!inner) return;
+
+    if (!inner.senderSignPub || Crypto.userId(inner.senderSignPub) !== senderUid) return;
+    const sigPayload = JSON.stringify({ text: inner.text, senderSignPub: inner.senderSignPub, senderBoxPub: inner.senderBoxPub });
+    if (!Crypto.verify(sigPayload, inner.sig, inner.senderSignPub)) return;
+
+    const contacts = await Storage.getContacts();
+    if (!contacts.find(c => c.userId === senderUid) && inner.senderSignPub) {
+      await Storage.saveContact({ userId: senderUid, signPub: inner.senderSignPub, boxPub: inner.senderBoxPub, addedAt: Date.now() });
+      await UI.renderContacts();
+    }
+
+    await this.#deliverDM(senderUid, inner.text, blob.id, blob.ts);
+  }
+
+  // Legacy path: sender identity in plaintext blob fields
+  async #handleDMLegacy(blob) {
     if (blob.senderSignPub) {
-      const derivedUid = Crypto.userId(blob.senderSignPub);
-      if (derivedUid !== blob.from) return; // identity mismatch
-
-      // 2. Verify signature — required when senderSignPub is present
+      if (Crypto.userId(blob.senderSignPub) !== blob.from) return;
       if (!blob.sig) {
         await this.#saveAndRender({ id:blob.id||blob.from+'_'+blob.ts, conv:this.#dmConvId(blob.from),
           from:blob.from, text:'[ENCRYPTED MESSAGE — SIGNATURE MISSING]', ts:blob.ts||Date.now(), corrupt:true });
         return;
       }
-      const payload = JSON.stringify({ct:blob.ct, nonce:blob.nonce, from:blob.from, to:Identity.uid(), ts:blob.ts});
-      if (!Crypto.verify(payload, blob.sig, blob.senderSignPub)) {
+      const newPayload    = JSON.stringify({ ct: blob.ct, nonce: blob.nonce, from: blob.from, ts: blob.ts });
+      const legacyPayload = JSON.stringify({ ct: blob.ct, nonce: blob.nonce, from: blob.from, to: Identity.uid(), ts: blob.ts });
+      if (!Crypto.verify(newPayload, blob.sig, blob.senderSignPub) &&
+          !Crypto.verify(legacyPayload, blob.sig, blob.senderSignPub)) {
         await this.#saveAndRender({ id:blob.id||blob.from+'_'+blob.ts, conv:this.#dmConvId(blob.from),
           from:blob.from, text:'[ENCRYPTED MESSAGE — SIGNATURE INVALID]', ts:blob.ts||Date.now(), corrupt:true });
         return;
       }
     }
 
-    // 3. Get sender boxPub (from blob or contacts)
     let senderBoxPub = blob.senderBoxPub;
     if (!senderBoxPub) {
-      const contacts = await Storage.getContacts();
-      const c = contacts.find(x => x.userId === blob.from);
+      const c = (await Storage.getContacts()).find(x => x.userId === blob.from);
       if (c) senderBoxPub = c.boxPub;
     }
-    if (!senderBoxPub) return; // can't decrypt
+    if (!senderBoxPub) return;
 
-    // 4. Decrypt
     const kp = Identity.kp();
-    const plaintext = Crypto.decrypt(blob.ct, blob.nonce, senderBoxPub, kp.boxSec);
+    let plaintext = null;
+    if (blob.senderEphemBoxPub) plaintext = Crypto.decrypt(blob.ct, blob.nonce, blob.senderEphemBoxPub, kp.boxSec);
+    if (plaintext === null)      plaintext = Crypto.decrypt(blob.ct, blob.nonce, senderBoxPub, kp.boxSec);
     if (plaintext === null) return;
 
-    // Auto-save sender as contact if unknown
     const contacts = await Storage.getContacts();
-    if (blob.senderSignPub && !contacts.find(c => c.userId === blob.from)) {
-      await Storage.saveContact({
-        userId:  blob.from,
-        signPub: blob.senderSignPub,
-        boxPub:  blob.senderBoxPub || senderBoxPub,
-        nick:    null,
-        addedAt: Date.now(),
-      });
+    if (!contacts.find(c => c.userId === blob.from) && blob.senderSignPub) {
+      await Storage.saveContact({ userId: blob.from, signPub: blob.senderSignPub, boxPub: blob.senderBoxPub || senderBoxPub, addedAt: Date.now() });
       await UI.renderContacts();
     }
 
-    const msg = { id:blob.id||blob.from+'_'+blob.ts, conv:this.#dmConvId(blob.from),
-      from:blob.from, text:plaintext, ts:blob.ts||Date.now() };
-    await Storage.saveMessage(msg);
+    await this.#deliverDM(blob.from, plaintext, blob.id, blob.ts);
+  }
 
-    const isActive = this.#activeDM && this.#activeDM.userId === blob.from;
+  async #deliverDM(senderUid, plaintext, blobId, blobTs) {
+    const msgId = blobId || senderUid + '_' + blobTs;
+    const msg   = { id: msgId, conv: this.#dmConvId(senderUid), from: senderUid, text: plaintext, ts: blobTs || Date.now() };
+    const inDb  = await Storage.getMessage(msgId);
+    await Storage.saveMessage(msg);
+    if (inDb) return;
+
+    const isActive    = this.#activeDM && this.#activeDM.userId === senderUid;
     const dataVisible = document.getElementById('tab-data')?.classList.contains('active');
-    if (isActive) await UI.renderMessages(this.#dmConvId(blob.from));
-    if (!isActive || !dataVisible) { Audio.recv(); UI.notify('> INCOMING TRANSMISSION FROM @' + blob.from); }
+    if (isActive) await UI.renderMessages(this.#dmConvId(senderUid));
+    if (!isActive || !dataVisible) {
+      const sender = (await Storage.getContacts()).find(c => c.userId === senderUid);
+      Audio.recv(); UI.notify('> INCOMING TRANSMISSION FROM ' + (sender?.nick || ('@' + senderUid)));
+    }
   }
 
   // ── INCOMING GROUP MSG ────────────────────────────────────────
@@ -87,10 +133,9 @@ class PipChatApp {
     const msgId = blob.id || blob.from+'_'+blob.ts;
     const conv  = this.#grpConvId(group.groupId);
 
-    // Verify sender signature when senderSignPub is present
     if (blob.senderSignPub) {
       const derivedUid = Crypto.userId(blob.senderSignPub);
-      if (derivedUid !== blob.from) return; // identity mismatch
+      if (derivedUid !== blob.from) return;
       if (!blob.sig) {
         await this.#saveAndRender({ id:msgId, conv, from:blob.from,
           text:'[GROUP MESSAGE — SIGNATURE MISSING]', ts:blob.ts||Date.now(), corrupt:true });
@@ -120,11 +165,127 @@ class PipChatApp {
     if (this.#activeGroup && this.#grpConvId(this.#activeGroup.groupId) === msg.conv) await UI.renderMessages(msg.conv);
   }
 
+  // ── DM MODE CALLBACKS ────────────────────────────────────────
+
+  #dmModeChangedCb = async (uid, mode) => {
+    const prev = this.#prevDmMode[uid] || 'relay';
+    this.#prevDmMode[uid] = (mode === 'rejected') ? 'relay' : mode;
+
+    if (this.#activeDM?.userId === uid) {
+      UI.updateDmMode(mode === 'rejected' ? 'relay' : mode);
+    }
+
+    if (mode === 'direct') {
+      Audio.recv();
+      UI.notify('> DIRECT LINK ESTABLISHED — PEER-TO-PEER ACTIVE');
+      // Auto-open chat for the side that accepted (doesn't have the DM open yet)
+      if (!this.#activeDM || this.#activeDM.userId !== uid) {
+        const contacts = await Storage.getContacts();
+        const contact  = contacts.find(c => c.userId === uid);
+        if (contact) await this.openDM(contact);
+      }
+    } else if (mode === 'relay' && (prev === 'direct' || prev === 'connecting')) {
+      UI.notify('> DIRECT LINK TERMINATED — RETURNING TO RELAY', 'warn');
+    } else if (mode === 'rejected') {
+      UI.notify('> DIRECT LINK REQUEST REJECTED', 'warn');
+    } else if (mode === 'requesting') {
+      UI.notify('> DIRECT LINK REQUEST SENT — AWAITING CONFIRMATION', 'warn');
+    }
+  };
+
+  #dmRequestCb = async (fromUid) => {
+    const contacts = await Storage.getContacts();
+    const contact  = contacts.find(c => c.userId === fromUid);
+    const label    = contact?.nick || ('@' + fromUid);
+    Audio.recv();
+    UI.notify('> INCOMING DIRECT LINK REQUEST FROM ' + label, 'warn');
+    showModal('DIRECT LINK REQUEST', [
+      `<strong>${esc(label)}</strong> is requesting a direct peer-to-peer connection.`,
+      'Accept to communicate without the relay server.',
+      '<span style="color:var(--pip-green-dim);font-size:11px">You can close the direct link at any time.</span>',
+    ], [
+      { label: 'ACCEPT', cls: '', action: () => { Audio.click(); Network.acceptDirect(fromUid); } },
+      { label: 'REJECT', cls: 'danger', action: () => { Audio.click(); Network.rejectDirect(fromUid); } },
+    ]);
+  };
+
+  get dmModeChangedCallback() { return this.#dmModeChangedCb; }
+  get dmRequestCallback()     { return this.#dmRequestCb; }
+
   // ── PUBLIC CALLBACKS (used from main.js) ─────────────────────
 
   get dmCallback()       { return this.#handleDM.bind(this); }
 
   receiveGroupMsg(blob, group) { return this.#handleGroupMsg(blob, group); }
+
+  // ── DIRECT CONNECTION CONTROLS ───────────────────────────────
+
+  requestDirectConnection() {
+    if (!this.#activeDM) return;
+    Audio.click();
+    Network.requestDirect(this.#activeDM.userId);
+  }
+
+  closeDirectConnection() {
+    if (!this.#activeDM) return;
+    Audio.click();
+    Network.closeDirect(this.#activeDM.userId);
+  }
+
+  // ── ENCRYPTION HELPERS ───────────────────────────────────────
+
+  // Try ratchet (X3DH init or existing session), fallback to legacy ephemeral.
+  async #dmEncrypt(userId, boxPub, signPub, text) {
+    const ts  = Date.now();
+    const kp  = Identity.kp();
+
+    // 1 — existing session → ratchet message
+    if (await Ratchet.hasSession(userId)) {
+      const inner = this.#signedInner(text, kp);
+      const { ct, nonce, msgNum } = await Ratchet.encrypt(userId, inner);
+      return this.#makeBlob(ct, nonce, { ts, expires: ts + 7*24*60*60*1000,
+        ratchet: JSON.stringify({ type: 'ratchet', msgNum }) });
+    }
+
+    // 2 — no session: try X3DH
+    const theirSpk = await Network.fetchSpk(userId);
+    if (theirSpk && Crypto.verify(theirSpk.spkPub, theirSpk.spkSig, signPub)) {
+      const ekKp   = Crypto.generateBoxKeypair();
+      const dh1    = Crypto.dh(kp.boxSec,    theirSpk.spkPub);  // IK_A × SPK_B
+      const dh2    = Crypto.dh(ekKp.boxSec,  boxPub);           // EK_A × IK_B
+      const dh3    = Crypto.dh(ekKp.boxSec,  theirSpk.spkPub);  // EK_A × SPK_B
+      await Ratchet.initSession(userId, Crypto.x3dhSecret(dh1, dh2, dh3), true, ekKp.boxPub);
+      console.log('[X3DH][INIT] session with', userId.slice(0, 8));
+      const inner = this.#signedInner(text, kp);
+      const { ct, nonce, msgNum } = await Ratchet.encrypt(userId, inner);
+      return this.#makeBlob(ct, nonce, {
+        ts, expires: ts + 7*24*60*60*1000,
+        ratchet: JSON.stringify({ type: 'x3dh', ekPub: ekKp.boxPub, senderBoxPub: kp.boxPub, msgNum }),
+      });
+    }
+
+    // 3 — no SPK available: legacy ephemeral scheme
+    return this.#legacyEncrypt(text, boxPub, ts, kp);
+  }
+
+  // Inner plaintext for ratchet: identity + sig inside CT (relay never sees them)
+  #signedInner(text, kp) {
+    const inner = { text, senderSignPub: kp.signPub, senderBoxPub: kp.boxPub };
+    inner.sig   = Crypto.sign(JSON.stringify({ text, senderSignPub: kp.signPub, senderBoxPub: kp.boxPub }), kp.signSec);
+    return inner;
+  }
+
+  // Legacy: senderSignPub/BoxPub visible in blob (used when peer has no SPK)
+  #legacyEncrypt(text, boxPub, ts, kp) {
+    const myEphem = Network.ephemKp;
+    const enc     = Crypto.encrypt(text, boxPub, myEphem ? myEphem.boxSec : kp.boxSec);
+    const payload = JSON.stringify({ ct: enc.ct, nonce: enc.nonce, from: Identity.uid(), ts });
+    const sig     = Crypto.sign(payload, kp.signSec);
+    const extra   = { senderSignPub: kp.signPub, senderBoxPub: kp.boxPub, sig, ts, expires: ts + 7*24*60*60*1000 };
+    if (myEphem) extra.senderEphemBoxPub = myEphem.boxPub;
+    console.log('[DM][LEGACY] encrypting — peer has no SPK');
+    return this.#makeBlob(enc.ct, enc.nonce, extra);
+  }
 
   // ── SEND ─────────────────────────────────────────────────────
 
@@ -136,15 +297,10 @@ class PipChatApp {
     const uid = Identity.uid();
 
     if (this.#activeDM) {
-      const { userId, boxPub } = this.#activeDM;
-      let blob, enc;
+      const { userId, boxPub, signPub } = this.#activeDM;
+      let blob;
       try {
-        enc = Crypto.encrypt(text, boxPub, kp.boxSec);
-        const ts = Date.now();
-        const payload = JSON.stringify({ct:enc.ct, nonce:enc.nonce, from:uid, to:userId, ts});
-        const sig = Crypto.sign(payload, kp.signSec);
-        // ts passed in extraFields overrides makeBlob's internal Date.now() — keeps them in sync
-        blob = this.#makeBlob(enc.ct, enc.nonce, { senderSignPub:kp.signPub, senderBoxPub:kp.boxPub, sig, to:userId, ts });
+        blob = await this.#dmEncrypt(userId, boxPub, signPub, text);
       } catch(e) { Audio.error(); UI.notify(PIP.cryptoErr,'err'); return; }
 
       const msg = { id:blob.id, conv:this.#dmConvId(userId), from:uid, text, ts:blob.ts };
@@ -152,13 +308,18 @@ class PipChatApp {
       await UI.renderMessages(this.#dmConvId(userId));
 
       const sent = await Network.sendDM(userId, blob);
-      if (!sent) {
-        msg.pending = true;
+      if (sent === 'failed') {
+        msg.failed = true;
         await Storage.saveMessage(msg);
         await UI.renderMessages(this.#dmConvId(userId));
-        UI.notify(PIP.queued,'warn');
+        Audio.error();
+        UI.notify(PIP.rtcFailed, 'err');
+      } else if (sent === 'queued') {
+        Audio.send();
+        UI.notify(PIP.queued, 'warn');
       } else {
-        Audio.send(); UI.notify(PIP.sent);
+        Audio.send();
+        UI.notify(PIP.sent);
       }
 
     } else if (this.#activeGroup) {
@@ -182,18 +343,9 @@ class PipChatApp {
   async openDM(contact) {
     this.#activeDM    = contact;
     this.#activeGroup = null;
-    UI.openChat('@' + contact.userId + (contact.nick ? ' · ' + contact.nick : ''));
     UI.switchTab('data');
+    UI.openDMChat(contact, Network.getDmMode(contact.userId));
     await UI.renderMessages(this.#dmConvId(contact.userId));
-    // Refresh nick in background
-    Network.lookupProfile(contact.userId).then(async profile => {
-      if (profile?.nick && profile.nick !== contact.nick) {
-        contact.nick = profile.nick;
-        await Storage.saveContact(contact);
-        await UI.renderContacts();
-        UI.openChat('@' + contact.userId + ' · ' + contact.nick);
-      }
-    });
   }
 
   async openGroup(group) {
@@ -217,7 +369,6 @@ class PipChatApp {
     Audio.click();
     let val = document.getElementById('contact-input').value.trim();
 
-    // Handle pipchat share links: ...#id=KEY&nick=NICK
     if (val.includes('id=')) {
       const m = val.match(/[#?&]id=([^&\s]+)/);
       if (m) val = decodeURIComponent(m[1]);
@@ -257,9 +408,8 @@ class PipChatApp {
     const group    = { groupId, name, groupKey, members:1, createdBy:Identity.uid(), createdAt:Date.now() };
 
     await Storage.saveGroup(group);
-    await Network.publishGroupInfo(groupId, { groupId, name, createdBy:group.createdBy });
 
-    const inviteCode = groupId + '|' + groupKey;
+    const inviteCode = groupId + '|' + groupKey + '|' + name;
     showModal('CHANNEL ESTABLISHED', [
       `Channel <strong>${name}</strong> created.`,
       'Share this invite code with members:',
@@ -280,15 +430,14 @@ class PipChatApp {
     Audio.click();
     const val = document.getElementById('group-invite-input').value.trim();
     if (!val.includes('|')) { Audio.error(); UI.notify('> ERROR: INVALID INVITE CODE','err'); return; }
-    const [groupId, groupKey] = val.split('|');
+    const [groupId, groupKey, groupName] = val.split('|');
     if (!groupId || !groupKey) { Audio.error(); UI.notify('> ERROR: MALFORMED INVITE CODE','err'); return; }
 
     const existing = await Storage.getGroups();
     if (existing.find(g => g.groupId === groupId)) { UI.notify('> ALREADY A MEMBER OF THIS CHANNEL','warn'); return; }
 
-    const info  = await Network.lookupGroupInfo(groupId) || {};
-    const group = { groupId, name:info.name || groupId.slice(0,8).toUpperCase(),
-      groupKey, members:info.members||'?', joinedAt:Date.now() };
+    const group = { groupId, name: groupName || groupId.slice(0,8).toUpperCase(),
+      groupKey, joinedAt:Date.now() };
 
     await Storage.saveGroup(group);
     await UI.renderGroups();
@@ -388,6 +537,7 @@ class PipChatApp {
       '<span style="color:var(--pip-green-dim);font-size:11px">Message history is kept locally.</span>',
     ], [
       { label:'CONFIRM REMOVE', cls:'danger', action: async () => {
+        if (Network.getDmMode(c.userId) === 'direct') Network.closeDirect(c.userId);
         await Storage.delContact(c.userId);
         if (this.#activeDM && this.#activeDM.userId === c.userId) {
           this.#activeDM = null;
@@ -410,6 +560,7 @@ class PipChatApp {
       { label:'SAVE', cls:'', action: async () => {
         const val = document.getElementById('rename-ta')?.value.trim() || null;
         c.nick = val;
+        c.nickIsLocal = !!val;
         await Storage.saveContact(c);
         await UI.renderContacts();
         UI.notify('> DESIGNATION UPDATED');
